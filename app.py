@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import asyncio
 from playwright.async_api import async_playwright
@@ -7,12 +8,15 @@ from datetime import date, timedelta
 import re
 import plotly.express as px
 
-import os
 
+# ==========================================
+# 0. SETUP PLAYWRIGHT PENTRU CLOUD
+# ==========================================
 @st.cache_resource
 def install_playwright():
+    # Instalează doar browserul (dependențele de sistem sunt în packages.txt)
     os.system("playwright install chromium")
-    os.system("playwright install-deps chromium")
+
 
 install_playwright()
 
@@ -35,7 +39,8 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1} de rezultate...")
             offset = page_num * 25
-            url = f"https://www.booking.com/searchresults.ro.html?ss={location_encoded}&checkin={checkin}&checkout={checkout}&group_adults={adults}&no_rooms={rooms}&offset={offset}"
+            # AM ADĂUGAT &selected_currency=RON PENTRU A FORȚA PREȚURILE ÎN LEI
+            url = f"https://www.booking.com/searchresults.ro.html?ss={location_encoded}&checkin={checkin}&checkout={checkout}&group_adults={adults}&no_rooms={rooms}&offset={offset}&selected_currency=RON"
 
             await page.goto(url, timeout=60000)
             await page.wait_for_timeout(3000)
@@ -105,7 +110,6 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
                     "Link": link
                 })
 
-                # UPDATE PROGRESS
                 progress_state['current'] += 1
                 val = min(progress_state['current'] / progress_state['total'], 1.0)
                 st_progress.progress(val)
@@ -165,6 +169,9 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
                     total_price_num = int(numeric_str)
                     price_text = f"{total_price_num} lei"
                     price_per_person = f"{total_price_num // adults} lei"
+                else:
+                    # Salvăm textul brut pentru debug dacă nu găsește prețul
+                    price_text = "N/A (vezi format)"
 
                 score_match = re.search(r'(\d[\.,]\d+)\s*\(\d+\)', card_text)
                 score = score_match.group(1) if score_match else "N/A"
@@ -185,7 +192,6 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
                     "Link": link
                 })
 
-                # UPDATE PROGRESS
                 progress_state['current'] += 1
                 val = min(progress_state['current'] / progress_state['total'], 1.0)
                 st_progress.progress(val)
@@ -198,7 +204,7 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
 # 3. UTILAJE
 # ==========================================
 def extract_number(price_str):
-    if price_str == "N/A":
+    if price_str == "N/A" or "N/A" in str(price_str):
         return float('inf')
     digits = re.sub(r'[^\d]', '', str(price_str))
     return int(digits) if digits else float('inf')
@@ -288,7 +294,6 @@ if btn_extrage:
                 df = pd.DataFrame(date_extrase)
                 df = df.drop_duplicates(subset=['Nume Cabană', 'Link', 'Platformă'])
 
-                # Creăm o coloană numerică pentru calcule și grafice
                 df['Preț Numeric'] = df['Preț / Persoană'].apply(extract_number)
 
                 st.session_state['date_cabane'] = df
@@ -305,7 +310,6 @@ if btn_extrage:
 if st.session_state['date_cabane'] is not None:
     df_memorie = st.session_state['date_cabane']
 
-    # Filtrăm pe baza bugetului maxim
     mask = df_memorie['Preț Numeric'] <= buget_maxim
     df_filtered = df_memorie[mask].reset_index(drop=True)
 
@@ -328,17 +332,14 @@ if st.session_state['date_cabane'] is not None:
         # -----------------------------------------
         st.subheader("📊 Analiză Vizuală (Grafice)")
 
-        # Eliminăm rândurile cu preț 'inf' (cele care nu au preț disponibil) pentru grafice corecte
         df_plots = df_filtered[df_filtered['Preț Numeric'] != float('inf')]
 
         if not df_plots.empty:
             col_chart1, col_chart2 = st.columns(2)
 
-            # Culorile brandurilor
             color_map = {"Booking.com": "#003580", "Airbnb": "#FF5A5F"}
 
             with col_chart1:
-                # Grafic: Preț Mediu
                 avg_price = df_plots.groupby('Platformă')['Preț Numeric'].mean().reset_index()
                 fig_bar = px.bar(
                     avg_price,
@@ -350,29 +351,22 @@ if st.session_state['date_cabane'] is not None:
                     color_discrete_map=color_map
                 )
                 fig_bar.update_layout(showlegend=False, xaxis_title=None, yaxis_title="Lei")
-
-                # FORȚĂM LĂȚIMEA BAREI: astfel nu va mai acoperi tot ecranul dacă există doar o platformă
                 fig_bar.update_traces(width=0.4)
-
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_chart2:
-                # Grafic: Distribuția Prețurilor (Histogramă)
                 fig_hist = px.histogram(
                     df_plots,
                     x='Preț Numeric',
                     color='Platformă',
                     title="Distribuția Prețurilor / Persoană",
                     nbins=15,
-                    barmode='group',  # Arată platformele una lângă alta, nu suprapuse
-                    text_auto=True,  # ADĂUGĂM NUMĂRUL DIRECT PE BARE
+                    barmode='group',
+                    text_auto=True,
                     color_discrete_map=color_map
                 )
                 fig_hist.update_layout(xaxis_title="Preț / Persoană (Lei)", yaxis_title="Număr Proprietăți")
-
-                # Formatăm textul de pe bare să arate curat
                 fig_hist.update_traces(textposition='outside')
-
                 st.plotly_chart(fig_hist, use_container_width=True)
 
         # -----------------------------------------
@@ -380,7 +374,6 @@ if st.session_state['date_cabane'] is not None:
         # -----------------------------------------
         st.subheader("📋 Tabel Oferte")
 
-        # Ascundem coloana calculată numeric din tabel pentru aspect curat
         df_display = df_filtered.drop(columns=['Preț Numeric'], errors='ignore')
 
         st.dataframe(
@@ -398,3 +391,12 @@ if st.session_state['date_cabane'] is not None:
         st.download_button("📥 Descarcă tabelul (CSV)", data=csv, file_name=f'cabane_{location}.csv', mime='text/csv')
     else:
         st.warning(f"Niciuna din ofertele extrase nu se încadrează sub {buget_maxim} lei / persoană.")
+
+        st.divider()
+        st.subheader("🐛 MOD DEBUG: Datele brute extrase")
+        st.info(
+            "Acestea sunt datele extrase înainte de a aplica filtrul de buget. Dacă prețul este 'N/A', înseamnă că formatul returnat de site s-a schimbat față de ce așteaptă scraper-ul.")
+
+        # Afișăm tot ce a extras, fără filtre
+        st.dataframe(df_memorie, use_container_width=True)
+###
