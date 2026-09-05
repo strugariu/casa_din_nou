@@ -12,7 +12,6 @@ import os
 @st.cache_resource
 def install_playwright():
     os.system("playwright install chromium")
-    os.system("playwright install-deps chromium")
 
 install_playwright()
 
@@ -35,7 +34,7 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1} de rezultate...")
             offset = page_num * 25
-            url = f"https://www.booking.com/searchresults.ro.html?ss={location_encoded}&checkin={checkin}&checkout={checkout}&group_adults={adults}&no_rooms={rooms}&offset={offset}"
+            url = f"https://www.booking.com/searchresults.ro.html?ss={location_encoded}&checkin={checkin}&checkout={checkout}&group_adults={adults}&no_rooms={rooms}&offset={offset}&selected_currency=RON"
 
             await page.goto(url, timeout=60000)
             await page.wait_for_timeout(3000)
