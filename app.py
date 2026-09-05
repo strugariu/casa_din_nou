@@ -7,7 +7,7 @@ import urllib.parse
 from datetime import date, timedelta
 import re
 import plotly.express as px
-
+from playwright_stealth import stealth_async
 
 # ==========================================
 # 0. SETUP PLAYWRIGHT PENTRU CLOUD
@@ -35,6 +35,8 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
             viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
+        await stealth_async(page)  # Aplică setările de ascundere
+        await page.goto(url, timeout=60000)
 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1} de rezultate...")
@@ -132,6 +134,8 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
             viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
+        await stealth_async(page)  # Aplică setările de ascundere
+        await page.goto(url, timeout=60000)
 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Airbnb] Încărcăm pagina {page_num + 1} de rezultate...")
