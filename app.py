@@ -8,6 +8,10 @@ from datetime import date, timedelta
 import re
 import plotly.express as px
 
+
+# Am eliminat importul playwright_stealth pentru că dădea eroare
+
+
 # ==========================================
 # 0. SETUP PLAYWRIGHT PENTRU CLOUD
 # ==========================================
@@ -16,26 +20,8 @@ def install_playwright():
     # Instalează doar browserul (dependențele de sistem sunt în packages.txt)
     os.system("playwright install chromium")
 
+
 install_playwright()
-
-# ==========================================
-# 0.1 CONFIGURARE PROXY
-# ==========================================
-# Pune activare_proxy pe True când dai deploy. Local îl poți lăsa pe False.
-ACTIVARE_PROXY = True
-
-# Înlocuiește aceste date cu cele primite de la furnizorul tău de proxy (ex: Webshare, Smartproxy)
-PROXY_HOST = "ip-ul-sau-host-ul-proxy-ului"
-PROXY_PORT = "portul" # ex: "8000"
-PROXY_USER = "user_proxy"
-PROXY_PASS = "parola_proxy"
-
-# Construim dicționarul de proxy pentru Playwright
-proxy_config = {
-    "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
-    "username": PROXY_USER,
-    "password": PROXY_PASS
-} if ACTIVARE_PROXY else None
 
 
 # ==========================================
@@ -46,13 +32,17 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
     all_cabins = []
 
     async with async_playwright() as p:
-        # Aici am adăugat argumentul proxy
-        browser = await p.chromium.launch(headless=True, proxy=proxy_config)
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
+
+        # --- STEALTH MODE NATIV ---
+        # Ascundem faptul că e un browser automatizat (ștergem flag-ul de webdriver)
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        # --- FINAL STEALTH ---
 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1} de rezultate...")
@@ -71,9 +61,8 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
             try:
                 await page.wait_for_selector('[data-testid="property-card"]', timeout=10000)
             except:
-                # DEBUG: Afișăm titlul paginii pentru a vedea dacă am primit block chiar și cu proxy
                 titlu_pagina = await page.title()
-                st.error(f"Eroare Booking: Nu am găsit oferte. Probabil proxy-ul a fost detectat sau a expirat. Titlul paginii: '{titlu_pagina}'")
+                st.error(f"Eroare Booking: Nu am găsit oferte. (Titlu pagină: '{titlu_pagina}')")
                 break
 
             cards = await page.query_selector_all('[data-testid="property-card"]')
@@ -146,13 +135,16 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
     all_cabins = []
 
     async with async_playwright() as p:
-        # Aici am adăugat argumentul proxy
-        browser = await p.chromium.launch(headless=True, proxy=proxy_config)
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
+
+        # --- STEALTH MODE NATIV ---
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        # --- FINAL STEALTH ---
 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Airbnb] Încărcăm pagina {page_num + 1} de rezultate...")
@@ -320,7 +312,7 @@ if btn_extrage:
                 st_progress.progress(1.0)
                 st_status.success("✅ Extragerea s-a finalizat cu succes!")
             else:
-                st_status.warning("Nu am găsit rezultate valide. Posibil blocaj sau parametri greșiți.")
+                st_status.warning("Nu am găsit rezultate valide.")
                 st.session_state['date_cabane'] = None
 
         except Exception as e:
