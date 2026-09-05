@@ -395,5 +395,12 @@ if st.session_state['date_cabane'] is not None:
 
         csv = df_display.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Descarcă tabelul (CSV)", data=csv, file_name=f'cabane_{location}.csv', mime='text/csv')
-    else:
+   else:
         st.warning(f"Niciuna din ofertele extrase nu se încadrează sub {buget_maxim} lei / persoană.")
+        
+        st.divider()
+        st.subheader("🐛 MOD DEBUG: Datele brute extrase")
+        st.info("Acestea sunt datele extrase înainte de a aplica filtrul de buget. Dacă prețul este 'N/A', înseamnă că Airbnb a afișat prețul în $ sau alt format, iar codul nu l-a recunoscut.")
+        
+        # Afișăm tot ce a extras, fără filtre
+        st.dataframe(df_memorie, use_container_width=True)
