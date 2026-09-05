@@ -7,7 +7,6 @@ import urllib.parse
 from datetime import date, timedelta
 import re
 import plotly.express as px
-from playwright_stealth import stealth_async
 
 # ==========================================
 # 0. SETUP PLAYWRIGHT PENTRU CLOUD
@@ -17,8 +16,26 @@ def install_playwright():
     # Instalează doar browserul (dependențele de sistem sunt în packages.txt)
     os.system("playwright install chromium")
 
-
 install_playwright()
+
+# ==========================================
+# 0.1 CONFIGURARE PROXY
+# ==========================================
+# Pune activare_proxy pe True când dai deploy. Local îl poți lăsa pe False.
+ACTIVARE_PROXY = True
+
+# Înlocuiește aceste date cu cele primite de la furnizorul tău de proxy (ex: Webshare, Smartproxy)
+PROXY_HOST = "ip-ul-sau-host-ul-proxy-ului"
+PROXY_PORT = "portul" # ex: "8000"
+PROXY_USER = "user_proxy"
+PROXY_PASS = "parola_proxy"
+
+# Construim dicționarul de proxy pentru Playwright
+proxy_config = {
+    "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+    "username": PROXY_USER,
+    "password": PROXY_PASS
+} if ACTIVARE_PROXY else None
 
 
 # ==========================================
@@ -29,19 +46,17 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
     all_cabins = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Aici am adăugat argumentul proxy
+        browser = await p.chromium.launch(headless=True, proxy=proxy_config)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
-        await stealth_async(page)  # Aplică setările de ascundere
-        await page.goto(url, timeout=60000)
 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1} de rezultate...")
             offset = page_num * 25
-            # AM ADĂUGAT &selected_currency=RON PENTRU A FORȚA PREȚURILE ÎN LEI
             url = f"https://www.booking.com/searchresults.ro.html?ss={location_encoded}&checkin={checkin}&checkout={checkout}&group_adults={adults}&no_rooms={rooms}&offset={offset}&selected_currency=RON"
 
             await page.goto(url, timeout=60000)
@@ -56,6 +71,9 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
             try:
                 await page.wait_for_selector('[data-testid="property-card"]', timeout=10000)
             except:
+                # DEBUG: Afișăm titlul paginii pentru a vedea dacă am primit block chiar și cu proxy
+                titlu_pagina = await page.title()
+                st.error(f"Eroare Booking: Nu am găsit oferte. Probabil proxy-ul a fost detectat sau a expirat. Titlul paginii: '{titlu_pagina}'")
                 break
 
             cards = await page.query_selector_all('[data-testid="property-card"]')
@@ -128,14 +146,13 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
     all_cabins = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Aici am adăugat argumentul proxy
+        browser = await p.chromium.launch(headless=True, proxy=proxy_config)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1280, 'height': 720}
         )
         page = await context.new_page()
-        await stealth_async(page)  # Aplică setările de ascundere
-        await page.goto(url, timeout=60000)
 
         for page_num in range(max_pages):
             st_status.info(f"🌐 [Airbnb] Încărcăm pagina {page_num + 1} de rezultate...")
@@ -174,7 +191,6 @@ async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, s
                     price_text = f"{total_price_num} lei"
                     price_per_person = f"{total_price_num // adults} lei"
                 else:
-                    # Salvăm textul brut pentru debug dacă nu găsește prețul
                     price_text = "N/A (vezi format)"
 
                 score_match = re.search(r'(\d[\.,]\d+)\s*\(\d+\)', card_text)
@@ -304,7 +320,7 @@ if btn_extrage:
                 st_progress.progress(1.0)
                 st_status.success("✅ Extragerea s-a finalizat cu succes!")
             else:
-                st_status.warning("Nu am găsit rezultate.")
+                st_status.warning("Nu am găsit rezultate valide. Posibil blocaj sau parametri greșiți.")
                 st.session_state['date_cabane'] = None
 
         except Exception as e:
@@ -403,4 +419,3 @@ if st.session_state['date_cabane'] is not None:
 
         # Afișăm tot ce a extras, fără filtre
         st.dataframe(df_memorie, use_container_width=True)
-###
