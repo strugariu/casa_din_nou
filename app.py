@@ -1,15 +1,12 @@
 import os
 import streamlit as st
-import asyncio
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 import pandas as pd
 import urllib.parse
 from datetime import date, timedelta
 import re
+import base64
 import plotly.express as px
-
-
-# Am eliminat importul playwright_stealth pentru că dădea eroare
 
 
 # ==========================================
@@ -17,7 +14,6 @@ import plotly.express as px
 # ==========================================
 @st.cache_resource
 def install_playwright():
-    # Instalează doar browserul (dependențele de sistem sunt în packages.txt)
     os.system("playwright install chromium")
 
 
@@ -25,94 +21,118 @@ install_playwright()
 
 
 # ==========================================
-# 1. SCRAPER BOOKING.COM
+# UTILAJE
 # ==========================================
-async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, st_status, st_progress, progress_state):
+def extrage_numar(text):
+    if not text or text == "N/A": return float('inf')
+    text_fara_puncte = str(text).replace('.', '')
+    numere = re.findall(r'\d+', text_fara_puncte)
+    return int(numere[0]) if numere else float('inf')
+
+
+def curata_rating(rating_string):
+    if not rating_string: return "N/A"
+    try:
+        # Extragem primul număr din string (ex: "4,9 (120 evaluări)" -> 4.9)
+        val = rating_string.split()[0].replace(',', '.')
+        return val
+    except:
+        return "N/A"
+
+
+def extrage_link_sigur_airbnb(item):
+    base_url = "https://www.airbnb.com.ro/rooms"
+    listing_id = item.get('listingId') or item.get('listing', {}).get('id')
+    if listing_id: return f"{base_url}/{listing_id}"
+    try:
+        encoded_id = item.get('demandStayListing', {}).get('id', '')
+        if encoded_id:
+            decoded_bytes = base64.b64decode(encoded_id)
+            return f"{base_url}/{decoded_bytes.decode('utf-8').split(':')[-1]}"
+    except:
+        pass
+    return "https://www.airbnb.com.ro"
+
+
+# ==========================================
+# 1. SCRAPER BOOKING.COM (DOM PARSE + STEALTH)
+# ==========================================
+def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, st_status, st_progress, progress_state):
     location_encoded = urllib.parse.quote(location)
     all_cabins = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1280, 'height': 720}
         )
-        page = await context.new_page()
+        page = context.new_page()
 
-        # --- STEALTH MODE NATIV ---
-        # Ascundem faptul că e un browser automatizat (ștergem flag-ul de webdriver)
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        # --- FINAL STEALTH ---
+        # Stealth Mode Nativ
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         for page_num in range(max_pages):
-            st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1} de rezultate...")
+            st_status.info(f"🌐 [Booking.com] Încărcăm pagina {page_num + 1}...")
             offset = page_num * 25
             url = f"https://www.booking.com/searchresults.ro.html?ss={location_encoded}&checkin={checkin}&checkout={checkout}&group_adults={adults}&no_rooms={rooms}&offset={offset}&selected_currency=RON"
 
-            await page.goto(url, timeout=60000)
-            await page.wait_for_timeout(3000)
-
-            if page_num == 0:
-                try:
-                    await page.click('button#onetrust-accept-btn-handler', timeout=3000)
-                except:
-                    pass
-
             try:
-                await page.wait_for_selector('[data-testid="property-card"]', timeout=10000)
-            except:
-                titlu_pagina = await page.title()
-                st.error(f"Eroare Booking: Nu am găsit oferte. (Titlu pagină: '{titlu_pagina}')")
+                page.goto(url, timeout=60000)
+                page.wait_for_timeout(3000)
+
+                if page_num == 0:
+                    try:
+                        page.click('button#onetrust-accept-btn-handler', timeout=3000)
+                    except:
+                        pass
+
+                page.wait_for_selector('[data-testid="property-card"]', timeout=10000)
+            except Exception as e:
+                titlu = page.title()
+                st.error(f"Eroare Booking: Nu am găsit oferte. Probabil blocaj IP Cloud. (Titlu pagină: '{titlu}')")
                 break
 
-            cards = await page.query_selector_all('[data-testid="property-card"]')
-            if not cards:
-                break
+            cards = page.query_selector_all('[data-testid="property-card"]')
+            if not cards: break
 
-            for i, card in enumerate(cards):
-                title_el = await card.query_selector('[data-testid="title"]')
-                title = await title_el.inner_text() if title_el else "N/A"
+            for card in cards:
+                title_el = card.query_selector('[data-testid="title"]')
+                title = title_el.inner_text() if title_el else "N/A"
 
-                dist_el = await card.query_selector('[data-testid="distance"]')
-                distance = await dist_el.inner_text() if dist_el else "N/A"
+                dist_el = card.query_selector('[data-testid="distance"]')
+                distance = dist_el.inner_text() if dist_el else "N/A"
 
-                price_el = await card.query_selector('[data-testid="price-and-discounted-price"]')
-                price_text = await price_el.inner_text() if price_el else "N/A"
+                price_el = card.query_selector('[data-testid="price-and-discounted-price"]')
+                price_text = price_el.inner_text().replace('\xa0', ' ') if price_el else "N/A"
 
                 price_per_person = "N/A"
                 if price_text != "N/A":
                     price_base = price_text.split(',')[0]
                     numeric_str = re.sub(r'[^\d]', '', price_base)
                     if numeric_str:
-                        total_price_num = int(numeric_str)
-                        price_per_person = f"{total_price_num // adults} lei"
+                        price_per_person = f"{int(numeric_str) // adults} lei"
 
-                room_el = await card.query_selector('[data-testid="recommended-units"]')
+                room_el = card.query_selector('[data-testid="recommended-units"]')
+                room_info = "N/A"
                 if room_el:
-                    room_info = await room_el.inner_text()
-                    room_info = re.sub(r'Recomandare pentru grupul dumneavoastră[\r\n]*', '', room_info,
-                                       flags=re.IGNORECASE)
-                    room_info = ' • '.join([line.strip() for line in room_info.split('\n') if line.strip()])
-                else:
-                    room_info = "N/A"
+                    raw_info = room_el.inner_text()
+                    raw_info = re.sub(r'Recomandare pentru grupul dumneavoastră[\r\n]*', '', raw_info,
+                                      flags=re.IGNORECASE)
+                    room_info = ' • '.join([line.strip() for line in raw_info.split('\n') if line.strip()])
 
-                score_el = await card.query_selector('[data-testid="review-score"] div:first-child')
-                if score_el:
-                    score = await score_el.inner_text()
-                    score = score.replace('Scor:', '').strip()
-                else:
-                    score = "N/A"
+                score_el = card.query_selector('[data-testid="review-score"] div:first-child')
+                score = score_el.inner_text().replace('Scor:', '').strip() if score_el else "N/A"
 
-                link_el = await card.query_selector('a[data-testid="title-link"]')
-                link = await link_el.get_attribute('href') if link_el else "N/A"
-                if link != "N/A" and link.startswith("/"):
-                    link = f"https://www.booking.com{link}"
+                link_el = card.query_selector('a[data-testid="title-link"]')
+                link = link_el.get_attribute('href') if link_el else "N/A"
+                if link != "N/A" and link.startswith("/"): link = f"https://www.booking.com{link}"
 
                 all_cabins.append({
                     "Platformă": "Booking.com",
                     "Nume Cabană": title,
                     "Distanță Centru": distance,
-                    "Preț Total": price_text.replace('\xa0', ' '),
+                    "Preț Total": price_text,
                     "Preț / Persoană": price_per_person,
                     "Configurație Camere": room_info,
                     "Scor": score,
@@ -120,106 +140,93 @@ async def scrape_booking(location, checkin, checkout, adults, rooms, max_pages, 
                 })
 
                 progress_state['current'] += 1
-                val = min(progress_state['current'] / progress_state['total'], 1.0)
-                st_progress.progress(val)
+                st_progress.progress(min(progress_state['current'] / progress_state['total'], 1.0))
 
-        await browser.close()
+        browser.close()
         return all_cabins
 
 
 # ==========================================
-# 2. SCRAPER AIRBNB
+# 2. SCRAPER AIRBNB (NETWORK INTERCEPT)
 # ==========================================
-async def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, st_status, st_progress, progress_state):
+def scrape_airbnb(location, checkin, checkout, adults, rooms, max_pages, st_status, st_progress, progress_state):
     location_encoded = urllib.parse.quote(location)
     all_cabins = []
+    date_gasite_json = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1280, 'height': 720}
-        )
-        page = await context.new_page()
-
-        # --- STEALTH MODE NATIV ---
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        # --- FINAL STEALTH ---
-
-        for page_num in range(max_pages):
-            st_status.info(f"🌐 [Airbnb] Încărcăm pagina {page_num + 1} de rezultate...")
-            offset = page_num * 18
-            url = f"https://www.airbnb.com/s/{location_encoded}/homes?checkin={checkin}&checkout={checkout}&adults={adults}&min_bedrooms={rooms}&items_offset={offset}&currency=RON"
-
-            await page.goto(url, timeout=60000)
-            await page.wait_for_timeout(4000)
-
+    def handle_response(response):
+        if ("StaysSearch" in response.url or "ExploreSearch" in response.url) and response.request.method != "OPTIONS":
             try:
-                await page.wait_for_selector('[data-testid="card-container"]', timeout=12000)
+                json_data = response.json()
+                if 'data' in json_data:
+                    date_gasite_json.append(json_data)
             except:
-                break
+                pass
 
-            cards = await page.query_selector_all('[data-testid="card-container"]')
-            if not cards:
-                break
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        page.on("response", handle_response)
 
-            for i, card in enumerate(cards):
-                title_el = await card.query_selector('[data-testid="listing-card-title"]')
-                title = await title_el.inner_text() if title_el else "N/A"
+        # Iterăm prin pagini manual, modificând offset-ul
+        for page_num in range(max_pages):
+            st_status.info(f"🌐 [Airbnb] Încărcăm pagina {page_num + 1}...")
+            offset = page_num * 18
+            url = f"https://www.airbnb.com.ro/s/homes?query={location_encoded}&adults={adults}&min_bedrooms={rooms}&checkin={checkin}&checkout={checkout}&items_offset={offset}"
 
-                subtitle_el = await card.query_selector('[data-testid="listing-card-subtitle"]')
-                subtitle = await subtitle_el.inner_text() if subtitle_el else "N/A"
-                distance = subtitle.replace('\n', ' • ')
+            page.goto(url)
+            page.wait_for_timeout(5000)
+            page.evaluate("window.scrollBy(0, 1500)")
+            page.wait_for_timeout(2000)
 
-                card_text = await card.inner_text()
+            progress_state['current'] += 18
+            st_progress.progress(min(progress_state['current'] / progress_state['total'], 1.0))
 
-                price_match = re.search(r'L\s*([\d,]+)\s*RON\s*total', card_text, re.IGNORECASE)
-                price_text = "N/A"
-                price_per_person = "N/A"
+        browser.close()
 
-                if price_match:
-                    numeric_str = price_match.group(1).replace(',', '')
-                    total_price_num = int(numeric_str)
-                    price_text = f"{total_price_num} lei"
-                    price_per_person = f"{total_price_num // adults} lei"
-                else:
-                    price_text = "N/A (vezi format)"
+    # Procesăm JSON-urile capturate
+    if not date_gasite_json:
+        return []
 
-                score_match = re.search(r'(\d[\.,]\d+)\s*\(\d+\)', card_text)
-                score = score_match.group(1) if score_match else "N/A"
+    # Iterăm prin toate răspunsurile JSON capturate
+    for rezultate_json in date_gasite_json:
+        try:
+            rezultate = rezultate_json['data']['presentation']['staysSearch']['results']['searchResults']
+            for item in rezultate:
+                if item.get('__typename') != 'StaySearchResult': continue
 
-                link_el = await card.query_selector('a')
-                link = await link_el.get_attribute('href') if link_el else "N/A"
-                if link != "N/A" and link.startswith("/"):
-                    link = f"https://www.airbnb.com{link.split('?')[0]}"
+                titlu = item.get('title', '')
+                subtitlu = item.get('subtitle', '')
+                nume_complet = f"{titlu} - {subtitlu}"
+
+                pret_total_num = extrage_numar(
+                    item.get('structuredDisplayPrice', {}).get('primaryLine', {}).get('price', ''))
+                if pret_total_num == float('inf'): continue
+
+                pret_total_text = f"{pret_total_num} lei"
+                pret_pers_text = f"{pret_total_num // adults} lei"
+                rating = curata_rating(item.get('avgRatingLocalized', ''))
+                link = extrage_link_sigur_airbnb(item)
 
                 all_cabins.append({
                     "Platformă": "Airbnb",
-                    "Nume Cabană": title,
-                    "Distanță Centru": distance,
-                    "Preț Total": price_text,
-                    "Preț / Persoană": price_per_person,
+                    "Nume Cabană": nume_complet,
+                    "Distanță Centru": "Vezi pe hartă (Airbnb)",
+                    "Preț Total": pret_total_text,
+                    "Preț / Persoană": pret_pers_text,
                     "Configurație Camere": f"Min. {rooms} camere",
-                    "Scor": score,
+                    "Scor": rating,
                     "Link": link
                 })
+        except KeyError:
+            continue
 
-                progress_state['current'] += 1
-                val = min(progress_state['current'] / progress_state['total'], 1.0)
-                st_progress.progress(val)
-
-        await browser.close()
-        return all_cabins
-
-
-# ==========================================
-# 3. UTILAJE
-# ==========================================
-def extract_number(price_str):
-    if price_str == "N/A" or "N/A" in str(price_str):
-        return float('inf')
-    digits = re.sub(r'[^\d]', '', str(price_str))
-    return int(digits) if digits else float('inf')
+    return all_cabins
 
 
 # ==========================================
@@ -257,13 +264,10 @@ with st.sidebar:
         rooms = st.number_input("Număr camere", min_value=1, max_value=30, value=3)
 
     max_pages = st.slider("Număr maxim pagini / platformă", min_value=1, max_value=10, value=2)
-
     btn_extrage = st.button("🔄 Trage Datele Noi", type="primary", use_container_width=True)
 
     st.divider()
-
     st.header("🎛️ Filtrează Datele")
-    st.info("Se aplică instant pe datele descărcate.")
     buget_maxim = st.number_input("Buget max. per persoană (Lei)", min_value=10, max_value=5000, value=600, step=50)
 
 if btn_extrage:
@@ -271,53 +275,40 @@ if btn_extrage:
         st.error("Data de check-out trebuie să fie după data de check-in!")
     else:
         total_expected = 0
-        if platforma in ["Booking.com", "Ambele"]:
-            total_expected += max_pages * 25
-        if platforma in ["Airbnb", "Ambele"]:
-            total_expected += max_pages * 18
+        if platforma in ["Booking.com", "Ambele"]: total_expected += max_pages * 25
+        if platforma in ["Airbnb", "Ambele"]: total_expected += max_pages * 18
 
         progress_state = {'current': 0, 'total': total_expected if total_expected > 0 else 1}
-
         st_status = st.empty()
         st_progress = st.progress(0.0)
 
-        st_status.info("🚀 Pornim browser-ul și pregătim căutarea...")
-
+        # Nu mai avem nevoie de asyncio.run(), folosim execuție sincronă!
+        date_extrase = []
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            date_extrase = []
-
             if platforma in ["Booking.com", "Ambele"]:
-                rez_booking = loop.run_until_complete(
-                    scrape_booking(location, checkin.strftime("%Y-%m-%d"), checkout.strftime("%Y-%m-%d"), adults,
-                                   rooms, max_pages, st_status, st_progress, progress_state)
-                )
+                rez_booking = scrape_booking(location, checkin.strftime("%Y-%m-%d"), checkout.strftime("%Y-%m-%d"),
+                                             adults, rooms, max_pages, st_status, st_progress, progress_state)
                 date_extrase.extend(rez_booking)
 
             if platforma in ["Airbnb", "Ambele"]:
-                rez_airbnb = loop.run_until_complete(
-                    scrape_airbnb(location, checkin.strftime("%Y-%m-%d"), checkout.strftime("%Y-%m-%d"), adults,
-                                  rooms, max_pages, st_status, st_progress, progress_state)
-                )
+                rez_airbnb = scrape_airbnb(location, checkin.strftime("%Y-%m-%d"), checkout.strftime("%Y-%m-%d"),
+                                           adults, rooms, max_pages, st_status, st_progress, progress_state)
                 date_extrase.extend(rez_airbnb)
 
             if date_extrase:
                 df = pd.DataFrame(date_extrase)
                 df = df.drop_duplicates(subset=['Nume Cabană', 'Link', 'Platformă'])
-
-                df['Preț Numeric'] = df['Preț / Persoană'].apply(extract_number)
+                df['Preț Numeric'] = df['Preț / Persoană'].apply(extrage_numar)
 
                 st.session_state['date_cabane'] = df
                 st_progress.progress(1.0)
                 st_status.success("✅ Extragerea s-a finalizat cu succes!")
             else:
-                st_status.warning("Nu am găsit rezultate valide.")
+                st_status.warning("Nu am găsit rezultate valide. Posibil blocaj de securitate (Cloudflare).")
                 st.session_state['date_cabane'] = None
 
         except Exception as e:
-            st_status.error(f"Eroare în timpul executării: {e}")
-            st.session_state['date_cabane'] = None
+            st_status.error(f"Eroare severă la execuție: {e}")
 
 if st.session_state['date_cabane'] is not None:
     df_memorie = st.session_state['date_cabane']
@@ -339,53 +330,31 @@ if st.session_state['date_cabane'] is not None:
         airbnb_count = len(df_filtered[df_filtered['Platformă'] == 'Airbnb'])
         col4.metric("📊 Surse (Bkg / Airbnb)", f"{booking_count} / {airbnb_count}")
 
-        # -----------------------------------------
-        # GRAFICE (Analiză Vizuală)
-        # -----------------------------------------
         st.subheader("📊 Analiză Vizuală (Grafice)")
-
         df_plots = df_filtered[df_filtered['Preț Numeric'] != float('inf')]
 
         if not df_plots.empty:
             col_chart1, col_chart2 = st.columns(2)
-
             color_map = {"Booking.com": "#003580", "Airbnb": "#FF5A5F"}
 
             with col_chart1:
                 avg_price = df_plots.groupby('Platformă')['Preț Numeric'].mean().reset_index()
-                fig_bar = px.bar(
-                    avg_price,
-                    x='Platformă',
-                    y='Preț Numeric',
-                    color='Platformă',
-                    title="Prețul Mediu estimat / Persoană (Lei)",
-                    text_auto='.0f',
-                    color_discrete_map=color_map
-                )
+                fig_bar = px.bar(avg_price, x='Platformă', y='Preț Numeric', color='Platformă',
+                                 title="Prețul Mediu estimat / Persoană (Lei)", text_auto='.0f',
+                                 color_discrete_map=color_map)
                 fig_bar.update_layout(showlegend=False, xaxis_title=None, yaxis_title="Lei")
                 fig_bar.update_traces(width=0.4)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_chart2:
-                fig_hist = px.histogram(
-                    df_plots,
-                    x='Preț Numeric',
-                    color='Platformă',
-                    title="Distribuția Prețurilor / Persoană",
-                    nbins=15,
-                    barmode='group',
-                    text_auto=True,
-                    color_discrete_map=color_map
-                )
+                fig_hist = px.histogram(df_plots, x='Preț Numeric', color='Platformă',
+                                        title="Distribuția Prețurilor / Persoană", nbins=15, barmode='group',
+                                        text_auto=True, color_discrete_map=color_map)
                 fig_hist.update_layout(xaxis_title="Preț / Persoană (Lei)", yaxis_title="Număr Proprietăți")
                 fig_hist.update_traces(textposition='outside')
                 st.plotly_chart(fig_hist, use_container_width=True)
 
-        # -----------------------------------------
-        # TABELUL CU OFERTE
-        # -----------------------------------------
         st.subheader("📋 Tabel Oferte")
-
         df_display = df_filtered.drop(columns=['Preț Numeric'], errors='ignore')
 
         st.dataframe(
@@ -403,11 +372,3 @@ if st.session_state['date_cabane'] is not None:
         st.download_button("📥 Descarcă tabelul (CSV)", data=csv, file_name=f'cabane_{location}.csv', mime='text/csv')
     else:
         st.warning(f"Niciuna din ofertele extrase nu se încadrează sub {buget_maxim} lei / persoană.")
-
-        st.divider()
-        st.subheader("🐛 MOD DEBUG: Datele brute extrase")
-        st.info(
-            "Acestea sunt datele extrase înainte de a aplica filtrul de buget. Dacă prețul este 'N/A', înseamnă că formatul returnat de site s-a schimbat față de ce așteaptă scraper-ul.")
-
-        # Afișăm tot ce a extras, fără filtre
-        st.dataframe(df_memorie, use_container_width=True)
